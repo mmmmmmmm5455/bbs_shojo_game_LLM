@@ -39,16 +39,27 @@ class LLMFallback:
         host: Optional[str] = None,
     ) -> None:
         self.model = model
+        # 默认放宽：llama3 等较大模型冷启动首次 chat 常超过十几秒，过短会误判为不可用并退回模板。
         self.timeout = (
             timeout
             if timeout is not None
             else _env_float("BBS_SHOJO_OLLAMA_TIMEOUT", 12.0)
         )
+        # 默认不做更长重试，保证图形端响应时限；需要时可手动上调。
+        self.retry_timeout = _env_float(
+            "BBS_SHOJO_OLLAMA_RETRY_TIMEOUT", self.timeout
+        )
+        self.keep_alive = os.environ.get("BBS_SHOJO_OLLAMA_KEEP_ALIVE", "20m").strip()
         self._host = host
         self._client: Optional[ollama.Client] = None
         self._available: Optional[bool] = None
 
-    def _client_lazy(self) -> ollama.Client:
+    def _client_lazy(self, timeout_override: Optional[float] = None) -> ollama.Client:
+        if timeout_override is not None:
+            host = self._host or os.environ.get("OLLAMA_HOST")
+            if host:
+                return ollama.Client(host=host, timeout=timeout_override)
+            return ollama.Client(timeout=timeout_override)
         if self._client is None:
             host = self._host or os.environ.get("OLLAMA_HOST")
             if host:
@@ -82,7 +93,8 @@ class LLMFallback:
     def _chat_options(self) -> dict:
         return {
             "temperature": _env_float("BBS_SHOJO_OLLAMA_TEMPERATURE", 0.6),
-            "num_predict": _env_int("BBS_SHOJO_OLLAMA_NUM_PREDICT", 80),
+            # 更短默认输出，减少首轮等待；可用环境变量覆盖
+            "num_predict": _env_int("BBS_SHOJO_OLLAMA_NUM_PREDICT", 40),
         }
 
     def generate_reply_sync(
@@ -104,14 +116,17 @@ class LLMFallback:
                 except Exception:
                     pass
 
-        try:
-            client = self._client_lazy()
-            stream = client.chat(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                options=self._chat_options(),
-                stream=True,
-            )
+        def _chat_once(timeout_override: Optional[float] = None) -> Optional[str]:
+            client = self._client_lazy(timeout_override=timeout_override)
+            kwargs = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "options": self._chat_options(),
+                "stream": True,
+            }
+            if self.keep_alive:
+                kwargs["keep_alive"] = self.keep_alive
+            stream = client.chat(**kwargs)
             parts: List[str] = []
             for chunk in stream:
                 piece = ""
@@ -126,8 +141,23 @@ class LLMFallback:
                     parts.append(piece)
             text = "".join(parts).strip()
             return text or None
+
+        try:
+            text = _chat_once()
+            if text:
+                return text
         except Exception:
-            return None
+            text = None
+
+        # 常见于大模型首次加载：第一次超时/空响应后，用更长超时再试一次。
+        if self.retry_timeout > self.timeout + 1:
+            try:
+                text = _chat_once(timeout_override=self.retry_timeout)
+                if text:
+                    return text
+            except Exception:
+                pass
+        return None
 
     def generate_reply_async(
         self,

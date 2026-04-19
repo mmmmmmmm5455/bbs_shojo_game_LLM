@@ -22,6 +22,7 @@ import sys
 import os
 import json
 import time
+import datetime
 import random
 import subprocess
 import queue
@@ -300,6 +301,7 @@ class BBSShojoGame:
 
         # 图形版主玩法：聊天输入框
         self.chat_input = ""
+        self.chat_input_select_all = False
         self.chat_history: List[Dict[str, str]] = []
         self.chat_scroll = 0
         self._cursor_phase = 0.0
@@ -318,10 +320,28 @@ class BBSShojoGame:
         self._llm_first_token_seen = False
         self._llm_cancel_gen = 0
         self._llm_expected_token: Optional[int] = None
+        self._chat_busy_notice_ms = 0
+        self.show_turing_overlay = False
+        self.show_trapped_overlay = False
+        self.turing_overlay_timer = 0.0
+        self.trapped_overlay_timer = 0.0
+        self._fragment_overlay_fired: set[str] = set()
         # 输入焦点：True=聊天输入模式（按键优先写入输入框，不触发热键）
         # False=热键模式（H/F/K/... 等直接触发功能）
         self.chat_focus = True
         self.bbs_engine = BBSEngine(data_dir=story_bbs_data_dir())  # 复用终端版逻辑（记忆/图灵/特修斯/webcore）
+        try:
+            print(f"[Ollama] {self.bbs_engine.describe_llm_startup_status()}", flush=True)
+            if self.bbs_engine._llm_runtime_enabled():
+                ok = self.bbs_engine._llm_enabled()
+                print(f"[Ollama] checking availability... available={ok}", flush=True)
+                if ok:
+                    self.bbs_engine.warmup_llm_background()
+                    print("[Ollama] startup warmup queued", flush=True)
+            else:
+                print("[Ollama] skipped daemon probe (_llm_runtime_enabled=False)", flush=True)
+        except Exception as e:
+            print(f"[Ollama] startup status error: {e}", flush=True)
         # 首访问候：first_launch 在 _load_settings 后写入；_seed_chat 延后到 _load_settings 之后
         self.first_launch = True
         # 收音机线索冷却（每满若干次玩家发起对话才可再次roll）
@@ -925,6 +945,26 @@ class BBSShojoGame:
                         self._set_text_speed_from_mouse(event.pos[0])
                 elif event.type == pygame.KEYDOWN:
                     self._handle_key_press(event.key, event.unicode)
+            elif (
+                event.type == pygame.MOUSEBUTTONDOWN
+                and event.button == 3
+                and not self.settings_visible
+            ):
+                if self._chat_input_mode() and self._chat_input_box_rect().collidepoint(
+                    event.pos
+                ):
+                    try:
+                        import pyperclip
+
+                        raw = pyperclip.paste() or ""
+                        line = raw.replace("\r\n", "\n").split("\n", 1)[0]
+                        line = line.replace("\t", " ")
+                        safe = "".join(c for c in line if c.isprintable())
+                        self.chat_input += safe
+                        self.chat_input = self.chat_input[-240:]
+                        self.chat_input_select_all = False
+                    except Exception:
+                        pass
             elif event.type == pygame.KEYDOWN:
                 self._handle_key_press(event.key, event.unicode)
 
@@ -941,6 +981,9 @@ class BBSShojoGame:
 
         # O：音量/CRT 设置；在「底部输入框打字模式」下勿抢键（避免误弹层）
         if key == pygame.K_o:
+            if self._chat_input_mode() and (mods & pygame.KMOD_CTRL):
+                # Ctrl+O 在输入模式下勿弹设置层（与 Ctrl+V 等剪贴板组合键并存）
+                return
             in_typing_bar = (
                 self._chat_can_accept_input()
                 and self.chat_focus
@@ -972,9 +1015,53 @@ class BBSShojoGame:
             self.chat_focus = not self.chat_focus
             return
 
+        ctrl_only = bool(mods & pygame.KMOD_CTRL) and not bool(mods & pygame.KMOD_ALT)
+        if self._chat_input_mode() and ctrl_only:
+            if key == pygame.K_v:
+                try:
+                    import pyperclip
+
+                    raw = pyperclip.paste() or ""
+                    line = raw.replace("\r\n", "\n").split("\n", 1)[0]
+                    line = line.replace("\t", " ")
+                    safe = "".join(c for c in line if c.isprintable())
+                    self.chat_input += safe
+                    self.chat_input = self.chat_input[-240:]
+                    self.chat_input_select_all = False
+                except Exception:
+                    pass
+                return
+            if key == pygame.K_c:
+                try:
+                    import pyperclip
+
+                    if self.chat_input_select_all or self.chat_input:
+                        pyperclip.copy(self.chat_input)
+                    self.chat_input_select_all = False
+                except Exception:
+                    pass
+                return
+            if key == pygame.K_x:
+                try:
+                    import pyperclip
+
+                    if self.chat_input:
+                        pyperclip.copy(self.chat_input)
+                        self.chat_input = ""
+                    self.chat_input_select_all = False
+                except Exception:
+                    pass
+                return
+            if key == pygame.K_a:
+                self.chat_input_select_all = True
+                return
+            # 其余 Ctrl+ 在输入模式下不触发全局热键（P 暂停、V 垂直失调等）
+            return
+
         # 当聊天输入模式开启且未按 Ctrl/Alt 时，优先把按键当作输入
         if self._chat_can_accept_input() and self.chat_focus and not hotkey_modifier:
             if key == pygame.K_BACKSPACE:
+                self.chat_input_select_all = False
                 self.chat_input = self.chat_input[:-1]
                 return
             if key == pygame.K_RETURN:
@@ -988,11 +1075,13 @@ class BBSShojoGame:
                 return
             if unicode and unicode.isprintable():
                 if unicode not in ("\r", "\n", "\t"):
+                    self.chat_input_select_all = False
                     self.chat_input += unicode
                     self.chat_input = self.chat_input[-240:]
                 return
             if key == pygame.K_o:
                 ch = "O" if mods & pygame.KMOD_SHIFT else "o"
+                self.chat_input_select_all = False
                 self.chat_input += ch
                 self.chat_input = self.chat_input[-240:]
                 return
@@ -1033,7 +1122,9 @@ class BBSShojoGame:
             # 触发图灵测试
             self._toggle_turing()
         elif key == pygame.K_v:
-            # 触发垂直保持失调效果
+            # 触发垂直保持失调效果（热键模式；Ctrl+V 在输入框由剪贴板处理，此处忽略以免冲突）
+            if mods & pygame.KMOD_CTRL:
+                return
             if not self.vh_manager.enabled:
                 return
             if self.vh_manager.active:
@@ -1078,6 +1169,25 @@ class BBSShojoGame:
     def _update_subsystems(self, delta_time: float):
         """更新所有子系统"""
         self._poll_llm_reply_queue()
+        girl = getattr(self.bbs_engine, "girl", None)
+        if girl is not None:
+            frags = girl.memory_fragments
+            if "turing_doubt" in frags and "turing_doubt" not in self._fragment_overlay_fired:
+                self._fragment_overlay_fired.add("turing_doubt")
+                self.show_turing_overlay = True
+                self.turing_overlay_timer = 3.0
+            if "trapped" in frags and "trapped" not in self._fragment_overlay_fired:
+                self._fragment_overlay_fired.add("trapped")
+                self.show_trapped_overlay = True
+                self.trapped_overlay_timer = 3.0
+        if self.show_turing_overlay:
+            self.turing_overlay_timer -= delta_time
+            if self.turing_overlay_timer <= 0:
+                self.show_turing_overlay = False
+        if self.show_trapped_overlay:
+            self.trapped_overlay_timer -= delta_time
+            if self.trapped_overlay_timer <= 0:
+                self.show_trapped_overlay = False
         self._update_chat_typing(delta_time)
         self._update_ending_sequence(delta_time)
         # 更新CRT管理器（真结局 phase2 计时亦在 _update_ending_sequence）
@@ -1151,6 +1261,9 @@ class BBSShojoGame:
         final_aging = base_aging + (100.0 - base_aging) * (1.0 - t)
         if self._has_fear_fragment():
             final_aging = min(100.0, final_aging + 15.0)
+        girl_crt = getattr(self.bbs_engine, "girl", None)
+        if girl_crt is not None and "turing_doubt" in girl_crt.memory_fragments:
+            final_aging = min(100.0, final_aging + 8.0)
         if self.ending_triggered and self.ending_phase == 2:
             u = min(1.0, self.ending_timer / 4.0)
             final_aging = max(final_aging, 25.0 + 75.0 * u)
@@ -1160,6 +1273,17 @@ class BBSShojoGame:
         self._draw_character()
         self._draw_ui()
         self._draw_chat_ui()
+        if self.show_turing_overlay or self.show_trapped_overlay:
+            try:
+                ol_font = get_ui_font(20)
+            except Exception:
+                ol_font = self.small_font
+            if self.show_turing_overlay:
+                ts = ol_font.render("图灵测试进行中……", True, (100, 255, 100))
+                self.screen.blit(ts, (self.screen.get_width() - ts.get_width() - 40, 50))
+            if self.show_trapped_overlay:
+                tr = ol_font.render("出口未定义", True, (255, 100, 100))
+                self.screen.blit(tr, (50, self.screen.get_height() - 80))
         if self.typing_challenge.is_active():
             self._draw_typing_challenge()
         if self.forum_active:
@@ -1373,7 +1497,8 @@ class BBSShojoGame:
             "通过互动提升记忆碎片并探索剧情分支。",
             "打字挑战会根据准确率与速度给出反馈。",
             "论坛会周期性出现 NPC 发帖，可用于观察世界状态。",
-            "也可输入 /help 查看聊天内命令；/midi 可试简谱彩蛋。",
+            "也可输入 /help 查看聊天内命令；/export 导出聊天记录为 .txt；/midi 可试简谱彩蛋。",
+            "聊天输入模式（底部输入焦点）：Ctrl+C/V/X/A 与右键粘贴；热键模式下 V 仍为垂直失调，Ctrl+V 无效。",
             "记忆碎片增加时：右上角「记忆分辨率」立绘更细，CRT 会略减弱。",
             "",
             "按 H 或 ESC 返回游戏",
@@ -1865,6 +1990,7 @@ class BBSShojoGame:
                 if len(item) < 5:
                     continue
                 _, tok, post_id, message, keywords = item[:5]
+                fallback_reason = item[5] if len(item) >= 6 else ""
                 if tok != self._llm_expected_token:
                     self._ollama_generating = False
                     continue
@@ -1872,6 +1998,13 @@ class BBSShojoGame:
                     post_id, message, keywords
                 )
                 self._llm_expected_token = None
+                if fallback_reason:
+                    self.chat_history.append(
+                        {
+                            "role": "system",
+                            "text": f"[系统] 本轮 LLM 回退：{fallback_reason}",
+                        }
+                    )
                 self._finish_girl_reply_async(message, reply)
 
     def _finish_girl_reply_async(self, user_msg: str, reply: str) -> None:
@@ -1893,9 +2026,22 @@ class BBSShojoGame:
 
     def _chat_send_current(self):
         msg = self.chat_input.strip()
-        self.chat_input = ""
         if not msg:
             return
+        if self._ollama_generating:
+            now = pygame.time.get_ticks()
+            # 单轮锁：上一轮还在生成时不接收新消息，避免多条堆叠导致观感错位。
+            if now - self._chat_busy_notice_ms >= 1200:
+                self._chat_busy_notice_ms = now
+                self.chat_history.append(
+                    {
+                        "role": "system",
+                        "text": "[系统] 小误还在回复上一句，请稍候…（等待完成后再按回车）",
+                    }
+                )
+            return
+        self.chat_input = ""
+        self.chat_input_select_all = False
         if self._try_start_true_ending_from_plain(msg):
             return
         self._llm_cancel_gen += 1
@@ -1930,9 +2076,77 @@ class BBSShojoGame:
             self.chat_history.append(
                 {
                     "role": "system",
-                    "text": "直接打字可与「小误」对话（含简单上下文）。命令：/help /mode /sig /geo /deadlinks /memories /turing /answer /theseus /bgm /midi",
+                    "text": "直接打字可与「小误」对话（含简单上下文）。输入模式（Tab 为输入焦点）下：Ctrl+V 粘贴、Ctrl+C 复制、Ctrl+X 剪切、Ctrl+A 全选、右键粘贴；其它 Ctrl+ 不会触发全局热键。命令：/help /status /prompt /export /mode /sig /geo /deadlinks /memories /turing /answer /theseus /bgm /midi",
                 }
             )
+            return
+        if head == "status":
+            mode_text = "输入模式" if self.chat_focus else "热键模式"
+            llm = self.bbs_engine.llm_runtime_snapshot()
+            self.chat_history.append(
+                {
+                    "role": "system",
+                    "text": f"[系统] UI模式: {mode_text}\n[系统] {llm}",
+                }
+            )
+            return
+        if head == "prompt":
+            if self.bbs_engine._llm_enabled():
+                prompt = self.bbs_engine._build_llm_prompt("__TEST__")
+                preview = prompt[:500] + ("…" if len(prompt) > 500 else "")
+                self.chat_history.append(
+                    {"role": "system", "text": f"[系统] 当前提示词预览:\n{preview}"}
+                )
+            else:
+                self.chat_history.append(
+                    {
+                        "role": "system",
+                        "text": "[系统] LLM 未启用，无法预览提示词。",
+                    }
+                )
+            return
+        if head == "export":
+            try:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"bbs_chat_export_{timestamp}.txt"
+                export_path = user_data_path(filename)
+
+                lines: List[str] = []
+                lines.append(
+                    f"BBS Shojo 聊天记录 - 导出时间：{datetime.datetime.now()}"
+                )
+                lines.append("=" * 50)
+                for entry in self.chat_history:
+                    role = entry.get("role", "unknown")
+                    text = entry.get("text", "")
+                    if role == "player":
+                        lines.append(f"> {text}")
+                    elif role == "girl":
+                        lines.append(f"小误：{text}")
+                    elif role == "system":
+                        lines.append(f"[系统] {text}")
+                    else:
+                        lines.append(str(text))
+                lines.append("=" * 50)
+                lines.append("导出完成。感谢你与小误的对话。")
+
+                os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+                with open(export_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+
+                self.chat_history.append(
+                    {
+                        "role": "system",
+                        "text": f"[系统] 聊天记录已导出至：{export_path}",
+                    }
+                )
+            except Exception as e:
+                self.chat_history.append(
+                    {
+                        "role": "system",
+                        "text": f"[系统] 导出失败：{e}",
+                    }
+                )
             return
         if head == "mode":
             self.chat_history.append({"role": "system", "text": self.bbs_engine.set_mode(tail or "")})
@@ -2014,6 +2228,17 @@ class BBSShojoGame:
             return
 
         self.chat_history.append({"role": "system", "text": f"未知命令：/{head}（输入 /help 查看）"})
+
+    def _chat_input_mode(self) -> bool:
+        """底部聊天为输入模式：可吃字符与剪贴板；热键模式（Tab 切走）下不走剪贴板逻辑。"""
+        return bool(self._chat_can_accept_input() and self.chat_focus)
+
+    def _chat_input_box_rect(self) -> pygame.Rect:
+        """底部聊天输入框区域（与 _draw_chat_ui 中绘制一致，供右键粘贴命中测试）。"""
+        panel_h = 280
+        panel_y = self.screen_height - panel_h - 40
+        box_y = panel_y + panel_h - 48
+        return pygame.Rect(30, box_y, self.screen_width - 60, 36)
 
     def _draw_chat_ui(self):
         """绘制聊天历史与输入框。"""

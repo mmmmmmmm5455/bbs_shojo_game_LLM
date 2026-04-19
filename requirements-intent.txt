@@ -6,3 +6,4 @@
 #          Set BBS_SHOJO_DISABLE_OLLAMA=1 to force off. OLLAMA_HOST for remote daemon.
 sentence-transformers>=2.2.0
 ollama>=0.3.0
+pyperclip>=1.8.2

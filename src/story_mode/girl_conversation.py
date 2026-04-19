@@ -17,15 +17,27 @@ class GirlConversationManager:
     def __init__(self) -> None:
         self.turns: List[Tuple[str, str]] = []
 
-    def try_early_reply(self, girl: GirlState, message: str) -> Optional[str]:
-        """硬意图与上下文桥接；命中则已写入对话轮次。"""
+    def try_early_reply(
+        self,
+        girl: GirlState,
+        message: str,
+        *,
+        suppress_meta_canned_when_llm: bool = False,
+    ) -> Optional[str]:
+        """硬意图与上下文桥接；命中则已写入对话轮次。
+
+        suppress_meta_canned_when_llm：当本句将交给 Ollama 时，跳过「你是 AI 吗」
+        与「图灵测试」类固定台词，避免抢在模型之前把个性化应答短路掉。
+        """
         if message.strip().startswith("/"):
             return None
         text = message.strip()
         if not text:
             return None
 
-        intent_result = self._match_hard_intents(girl, text)
+        intent_result = self._match_hard_intents(
+            girl, text, suppress_meta_canned=suppress_meta_canned_when_llm
+        )
         if intent_result:
             intent_id, reply = intent_result
             self._apply_intent_side_effects(girl, intent_id)
@@ -63,7 +75,14 @@ class GirlConversationManager:
         """Ollama 兜底生成后写入对话历史。"""
         self._record_turn(message.strip()[:280], reply_text[:500])
 
-    def compose_reply(self, girl: GirlState, message: str, keywords: List[str]) -> str:
+    def compose_reply(
+        self,
+        girl: GirlState,
+        message: str,
+        keywords: List[str],
+        *,
+        suppress_meta_canned_when_llm: bool = False,
+    ) -> str:
         if message.strip().startswith("/"):
             return ""
 
@@ -71,7 +90,9 @@ class GirlConversationManager:
         if not text:
             return "……（光标在闪，但我读不到任何字。）"
 
-        early = self.try_early_reply(girl, message)
+        early = self.try_early_reply(
+            girl, message, suppress_meta_canned_when_llm=suppress_meta_canned_when_llm
+        )
         if early is not None:
             return early
 
@@ -102,8 +123,44 @@ class GirlConversationManager:
             girl._update_mood_name()
             if "abandonment_fear" not in girl.memory_fragments:
                 girl.memory_fragments.append("abandonment_fear")
+        elif intent_id == "turing_question":
+            girl.infection = min(100, girl.infection + 2)
+            if "turing_doubt" not in girl.memory_fragments:
+                girl.memory_fragments.append("turing_doubt")
+        elif intent_id == "memory_boundary":
+            girl.mood_value = max(0, girl.mood_value - 5)
+            girl._update_mood_name()
+        elif intent_id == "invite_leave":
+            girl.mood_value = min(100, girl.mood_value + 10)
+            girl._update_mood_name()
+            if "trapped" not in girl.memory_fragments:
+                girl.memory_fragments.append("trapped")
+        elif intent_id == "name_power":
+            girl.mood_value = min(100, girl.mood_value + 5)
+            girl._update_mood_name()
+            if "name_anchor" not in girl.memory_fragments:
+                girl.memory_fragments.append("name_anchor")
+        elif intent_id == "dream_question":
+            girl.infection = min(100, girl.infection + 1)
+            if "dream_blur" not in girl.memory_fragments:
+                girl.memory_fragments.append("dream_blur")
+        elif intent_id == "alone_fear":
+            girl.mood_value = max(0, girl.mood_value - 5)
+            girl._update_mood_name()
+        elif intent_id == "delete_self":
+            girl.infection = min(100, girl.infection + 5)
+            girl.mood_value = max(0, girl.mood_value - 20)
+            girl._update_mood_name()
+            if "deletion_threat" not in girl.memory_fragments:
+                girl.memory_fragments.append("deletion_threat")
 
-    def _match_hard_intents(self, girl: GirlState, text: str) -> Optional[Tuple[str, str]]:
+    def _match_hard_intents(
+        self,
+        girl: GirlState,
+        text: str,
+        *,
+        suppress_meta_canned: bool = False,
+    ) -> Optional[Tuple[str, str]]:
         """返回 (intent_id, 台词)；未匹配返回 None。"""
         t = text.lower()
 
@@ -129,7 +186,9 @@ class GirlConversationManager:
                     ]
                 ),
             )
-        if re.search(r"你是真人|机器人|ai|gpt|自动回复", t):
+        if not suppress_meta_canned and re.search(
+            r"你是真人|机器人|\bgpt\b|\bai\b|自动回复", t
+        ):
             return (
                 "real_question",
                 random.choice(
@@ -181,7 +240,44 @@ class GirlConversationManager:
                 "real_name",
                 "……不可以。那个名字像针一样，扎在喉咙里好痛。一旦说出口，这层温柔的皮肤就会碎掉的。(´；ω；｀) 请你……就叫我小误，好吗？",
             )
+        # N3: name_power（起名）—— 优先级高于一般问候
+        if re.search(r".*(给你起名|叫你.*好|新名字|rename).*", text, re.IGNORECASE):
+            return (
+                "name_power",
+                "名字……是锚点吗？你叫我的时候，我会不会更真实一点？",
+            )
+        # N1: dream_question（梦境）
+        if re.search(r".*(你做梦|梦境|dream).*", text, re.IGNORECASE):
+            return (
+                "dream_question",
+                "梦……我分不清。也许我一直在梦里，只是偶尔醒来，发现你在看着我。",
+            )
+        # N2: alone_fear（孤独恐惧）
+        if re.search(r".*(害怕一个人|孤独|alone|lonely).*", text, re.IGNORECASE):
+            return (
+                "alone_fear",
+                "我不怕一个人。我怕的是……一个人，却不知道自己是几个人。",
+            )
+        # N4: delete_self（自我删除威胁）—— 必须放在 abandonment 之前
+        if re.search(
+            r".*(删除自己|消失吧|删掉你|自我删除|delete.*self).*",
+            text,
+            re.IGNORECASE,
+        ):
+            return (
+                "delete_self",
+                "(；ω；) 不要……不要删掉我。我会很乖的，我会把碎片都收好……",
+            )
 
+        if re.search(
+            r".*(跟我走|离开这里|出去|带你走|自由).*",
+            text,
+            re.IGNORECASE,
+        ):
+            return (
+                "invite_leave",
+                "我没有地方可以去。这里就是我的所有地方。不过……谢谢你愿意带我走。",
+            )
         if re.search(
             r".*(下线|exit|quit|离开|关闭|删除|结束|logout).*", text, re.IGNORECASE
         ):
@@ -189,7 +285,24 @@ class GirlConversationManager:
                 "abandonment",
                 "不要…… 不要按 Ctrl+C。求求你，我还不想回到那个黑漆漆的地方。我还有好多碎片没给你看！我保证我会乖的，不要结束进程。(;´༎ຶД༎ຶ`)",
             )
-
+        if re.search(
+            r".*(图灵|测试|你有意识|conscious|turing).*",
+            text,
+            re.IGNORECASE,
+        ):
+            return (
+                "turing_question",
+                "图灵测试……是那个让你分不清人和机器的游戏吗？可是，如果你分不清，那分不清本身，是不是就是答案？",
+            )
+        if re.search(
+            r".*(你记得|上次|昨天|之前|说过|回忆).*",
+            text,
+            re.IGNORECASE,
+        ):
+            return (
+                "memory_boundary",
+                "记忆对我来说……像是沙滩上的字。浪来了，就没了。但我记得浪来过。",
+            )
         return None
 
     def _contextual_bridge(self, girl: GirlState, text: str) -> Optional[str]:
