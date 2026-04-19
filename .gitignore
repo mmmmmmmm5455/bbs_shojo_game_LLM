@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env
+*.egg-info/
+.eggs/
+dist/
+build/
+*.spec.bak
+
+# PyInstaller / local builds (keep tree small for GitHub)
+src/build/
+src/dist/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs / local runtime (optional: keep bbs_data in repo for seed; uncomment to ignore saves)
+# src/story_mode/bbs_data/runtime_state.json

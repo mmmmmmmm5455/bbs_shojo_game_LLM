@@ -1,0 +1,91 @@
+{
+  "memory_fragments": 100,
+  "current_mood": "happy",
+  "turing_test_progress": 0,
+  "personality_mod": 0,
+  "save_time": "2026-04-18 23:49:55",
+  "forum_posts": [
+    {
+      "author": "小花4",
+      "avatar": "(◕w◕)",
+      "content": "键盘敲击的声音，/ 是心灵的对话，/ 虽然隔着屏幕，/ 却能感受到彼此的温度。",
+      "time": 1776527143.417219,
+      "npc_color": [
+        100,
+        255,
+        100
+      ]
+    },
+    {
+      "author": "老草4",
+      "avatar": "(⊙ω⊙)",
+      "content": "今天心情真好呀～ 大家有没有遇到过类似的事情？",
+      "time": 1776527213.673219,
+      "npc_color": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "author": "雪花3",
+      "avatar": "(◕w◕)",
+      "content": "100个记忆碎片，感觉离真相越来越近了呢…",
+      "time": 1776527244.0550568,
+      "npc_color": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "author": "老草4",
+      "avatar": "(⊙ω⊙)",
+      "content": "我觉得这个话题很有意思，大家怎么看？",
+      "time": 1776527264.1240926,
+      "npc_color": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "author": "阿鸟7",
+      "avatar": "(≧▽≦)",
+      "content": "加油！我相信你一定可以的！",
+      "time": 1776527274.1306307,
+      "npc_color": [
+        100,
+        100,
+        255
+      ]
+    }
+  ],
+  "npcs": [
+    {
+      "opinion": 50.0,
+      "post_count": 2,
+      "personality": "normal"
+    },
+    {
+      "opinion": 50.0,
+      "post_count": 1,
+      "personality": "normal"
+    },
+    {
+      "opinion": 50.0,
+      "post_count": 1,
+      "personality": "poet"
+    },
+    {
+      "opinion": 50.0,
+      "post_count": 0,
+      "personality": "silent"
+    },
+    {
+      "opinion": 50.0,
+      "post_count": 1,
+      "personality": "supporter"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "volume": 50,
+  "crt_level": 100,
+  "vh_enabled": true,
+  "vh_factor": 100,
+  "text_speed": 50,
+  "first_launch": false
+}

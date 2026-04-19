@@ -1,0 +1,14 @@
+[
+  {
+    "name": "tester",
+    "message": "hello webcore",
+    "time": "2026-04-08 14:15:36",
+    "reply": "小误：我看到了你的留言。"
+  },
+  {
+    "name": "me",
+    "message": "hi there",
+    "time": "2026-04-08 14:15:48",
+    "reply": "小误：我看到了你的留言。"
+  }
+]

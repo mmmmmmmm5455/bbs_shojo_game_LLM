@@ -1,0 +1,8 @@
+# Optional: semantic intent (Phase 1) + Ollama LLM fallback (Phase 2).
+# Install from repo root: pip install -r requirements-intent.txt
+#
+# Phase 1: pulls PyTorch (sentence-transformers). PyInstaller exe keeps keyword fallback unless bundled.
+# Phase 2: install Ollama from https://ollama.com then: ollama pull phi3:mini
+#          Set BBS_SHOJO_DISABLE_OLLAMA=1 to force off. OLLAMA_HOST for remote daemon.
+sentence-transformers>=2.2.0
+ollama>=0.3.0
