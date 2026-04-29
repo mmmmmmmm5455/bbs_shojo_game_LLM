@@ -27,3 +27,8 @@ Thumbs.db
 
 # Logs / local runtime (optional: keep bbs_data in repo for seed; uncomment to ignore saves)
 # src/story_mode/bbs_data/runtime_state.json
+# Logs / local runtime
+*.log
+savegame.json
+bbs_chat_export_*.txt
+offline_log.txt
